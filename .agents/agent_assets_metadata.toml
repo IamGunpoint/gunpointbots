@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "HohAdujKthuWu1EHqo2QK"
+uri = "file://gunpointbots-upgraded.zip"
+type = "unspecified"
+title = "GunpointBots Panel - Upgraded Source"
