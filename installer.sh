@@ -330,6 +330,17 @@ build_app() {
 
 # ─── create admin user ────────────────────────────────────────────
 
+ensure_python_bcrypt() {
+  # Try importing bcrypt; install it if missing
+  if ! python3 -c "import bcrypt" &>/dev/null; then
+    info "Installing Python bcrypt library..."
+    apt-get install -y -qq python3-pip 2>/dev/null || true
+    pip3 install bcrypt --quiet 2>/dev/null || \
+      python3 -m pip install bcrypt --quiet 2>/dev/null || \
+      error "Failed to install Python bcrypt. Try: pip3 install bcrypt"
+  fi
+}
+
 create_admin() {
   if [[ ! "$CREATE_ADMIN" =~ ^[Yy]$ ]]; then
     return
@@ -337,41 +348,29 @@ create_admin() {
 
   info "Creating admin account '$ADMIN_USER'..."
 
-  # Use node to hash the password and insert into DB
-  node - <<NODEEOF
-const { Pool } = require('pg');
-const bcrypt = require('bcryptjs');
+  ensure_python_bcrypt
 
-const pool = new Pool({ connectionString: '$DATABASE_URL' });
+  # Generate bcrypt hash via Python — no node module issues
+  ADMIN_HASH=$(python3 - <<PYEOF
+import bcrypt, sys
+pw = b"""${ADMIN_PASS}"""
+print(bcrypt.hashpw(pw, bcrypt.gensalt(12)).decode())
+PYEOF
+)
 
-async function main() {
-  const hash = await bcrypt.hash('$ADMIN_PASS', 12);
-  const client = await pool.connect();
-  try {
-    const exists = await client.query("SELECT id FROM users WHERE username = \$1", ['$ADMIN_USER']);
-    if (exists.rows.length > 0) {
-      await client.query(
-        "UPDATE users SET password_hash = \$1, role = 'admin' WHERE username = \$2",
-        [hash, '$ADMIN_USER']
-      );
-      console.log('Admin user updated.');
-    } else {
-      await client.query(
-        "INSERT INTO users (username, password_hash, role) VALUES (\$1, \$2, 'admin')",
-        ['$ADMIN_USER', hash]
-      );
-      console.log('Admin user created.');
-    }
-  } finally {
-    client.release();
-    await pool.end();
-  }
-}
+  if [[ -z "$ADMIN_HASH" ]]; then
+    warn "Could not generate password hash. Skipping admin creation."
+    return
+  fi
 
-main().catch(err => { console.error('Admin creation failed:', err.message); process.exit(1); });
-NODEEOF
-
-  success "Admin account '$ADMIN_USER' ready."
+  # Insert or update directly via psql
+  sudo -u postgres psql -d "$DB_NAME" -c "
+    INSERT INTO users (username, password_hash, role, is_suspended, force_password_change, theme, language)
+    VALUES ('${ADMIN_USER}', '${ADMIN_HASH}', 'admin', false, false, 'dark', 'en')
+    ON CONFLICT (username)
+    DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin';
+  " 2>/dev/null && success "Admin account '${ADMIN_USER}' ready." || \
+    warn "Admin insert failed — you can create it manually via the API after the panel starts."
 }
 
 # ─── create systemd service ───────────────────────────────────────
