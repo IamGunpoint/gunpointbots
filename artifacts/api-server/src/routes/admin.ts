@@ -71,7 +71,10 @@ router.get("/users", requireAdmin, async (req, res) => {
     const search = (req.query["search"] as string) || "";
 
     const where = search
-      ? or(ilike(usersTable.username, `%${search}%`), ilike(usersTable.email!, `%${search}%`))
+      ? or(
+          ilike(usersTable.username, `%${search}%`),
+          sql`COALESCE(${usersTable.email}, '') ILIKE ${"%" + search + "%"}`,
+        )
       : undefined;
 
     const [{ total }] = await db
